@@ -34,13 +34,17 @@ WorldInfoStarty=550 #WorldInfo开始坐标y
 WorldInfoWide=220 #定义WorldInfo的宽度
 WorldInfoPosition=Rect(GridPosition[2]+SmallGap,BigGap+ClanInfoHeight+BigGap\
     ,WorldInfoWide,GridPosition[3]-GridPosition[1]) #WorldInfo所占用的矩形
-CellSize=50 #每个格子的长宽（正方形）
+CellSize=10 #每个格子的长宽（正方形）
 NumL=int((GridPosition[2]-GridPosition[0])/CellSize) #每行多少个格子
 NumW=int((GridPosition[3]-GridPosition[1])/CellSize) #每列多少个格子
 ColorExist=[] #存放已经存在的Color
 ColorExistLock=threading.Lock() #ColorExist的锁
+#
 ClanToGenerate=[] #存放要产生的新部落的位置
 ClanToGenerateLock=threading.Lock() #ClanToGenerate的锁
+MemberToQuit=[] #存放因新部落产生而需要剔除出MemberList的成员
+MemberToQuitLock=threading.Lock() #管理MemberToQuit的锁
+#
 #产生map
 Grid=[]
 for n in range(NumW+2):
@@ -51,6 +55,9 @@ for n in range(NumW+2):
     Grid[n][0]='W'
     Grid[n][NumL+2-1]='W'
 GridLock=threading.Lock() #map的锁
+#周边检查坐标变化
+AddX=[-1,0,1,1,1,0,-1,-1]
+AddY=[1,1,1,0,-1,-1,-1,0]
 ##############################################################################
 
 ##############################################################################
@@ -70,18 +77,18 @@ class Clan(threading.Thread):
         if Speed==None:
             Speed=random.randint(1,3)
         if Speed==1:
-            self.Speed=10
+            self.Speed=30/3
         elif Speed==2:
-            self.Speed=30
+            self.Speed=30/4
         else:
-            self.Speed=50
+            self.Speed=30/5
         #初始化部落成员名单（存放所有人的位置）
         self.MemberList=[]
         #初始化部落的DeadAge
         if DeadAge==None:
-            self.DeadAge=random.randint(80,100)
+            self.DeadAge=random.randint(1000,2000)
             if random.random<=0.1:
-                self.DeadAge=random.randint(200,300)
+                self.DeadAge=random.randint(6000,10000)
         else:
             self.DeadAge=DeadAge
         #初始化部落的颜色
@@ -95,6 +102,7 @@ class Clan(threading.Thread):
                     ColorExist.index(self.Color)
                 except:
                     ColorHasExist=0
+                    ColorExist.append(self.Color)
                     ColorExistLock.release()
                 else:
                     ColorHasExist=1
@@ -112,17 +120,25 @@ class Clan(threading.Thread):
                     GridLock.acquire()
                     if Grid[Position[1]+1][Position[0]+1]==None:
                         PositionHasExist=0
-                        GridLock.release()
-                        Member=[self.Color,0,random.randint(3,40),random.randint(0,1),0]
+                        if random.random()<0.5:
+                            Member=[self.Color,0,random.randint(0,self.DeadAge),1,0]#男
+                        else:
+                            Member=[self.Color,0,random.randint(0,self.DeadAge),0,0]#女
                         self.GetPosition(None,Position,Member)
+                        GridLock.release()
                     else:
                         Position=[random.randint(0,NumL-1),random.randint(0,NumW-1)]
                         PositionHasExist=1
                         GridLock.release()
         else:
             for NewPosition in Position:
-                Member=[self.Color,0,random.randint(3,40),random.randint(0,1),0]
+                if random.random()<0.5:
+                    Member=[self.Color,0,random.randint(0,self.DeadAge),1,0]#男
+                else:
+                    Member=[self.Color,0,random.randint(0,self.DeadAge),0,0]#女
+                GridLock.acquire()
                 self.GetPosition(None,NewPosition,Member)
+                GridLock.release()
         #生成ClanInfo
         self.RefreshClanInfo(1)
         #生成WorldInfo
@@ -134,14 +150,91 @@ class Clan(threading.Thread):
             if RunState==0:
                 return
             if Pause==0:
+                #检查Clan是否存活
+                self.ClanExist()
+                #刷新ClanInfo
                 self.RefreshClanInfo(0)
-                pygame.time.wait(1000/self.Speed)
+                #通过逐一检查Memberlist来控制部落中每一个人
+                for PersonSite in self.MemberList:
+                    GridLock.acquire()
+                    Person=Grid[PersonSite[1]+1][PersonSite[0]+1]
+                    GridLock.release()
+                    PersonState=Person[1]
+                    PersonAge=Person[2]
+                    PersonSex=Person[3]
+                    PersonChilde=Person[4]
+                    #根据PersonState判断行动指标
+                    GridLock.acquire()
+                    Friend=[]
+                    Foe=[]
+                    NoPerson=[]
+                    for n in range(len(AddX)):
+                        Other=Grid[PersonSite[1]+1+AddY[n]][PersonSite[0]+1+AddX[n]]
+                        if Other==None:
+                            NoPerson.append([PersonSite[0]+AddX[n],PersonSite[1]+AddY[n]])
+                        elif Other=="W":
+                            pass
+                        elif Other[0]==self.Color:
+                            Friend.append([PersonSite[0]+AddX[n],PersonSite[1]+AddY[n],Other])
+                        else:
+                            Foe.append([PersonSite[0]+AddX[n],PersonSite[1]+AddY[n],Other])
+                    if PersonState==0:#和平状态
+                        if Friend==[] and Foe==[]:#周围空无一人，就走动
+                            PersonNewSite=random.choice(NoPerson)
+                            self.GetPosition(PersonSite,PersonNewSite,[self.Color,PersonState,PersonAge,PersonSex,PersonChilde])
+                            PersonSite=copy.deepcopy(PersonNewSite)
+                        elif Foe!=[]:#周围有敌人
+                            pass
+                        else:#周围只有朋友
+                            pass
+                    if PersonState!=0:#战争状态
+                        pass
+                    GridLock.release()
+                    #判断是否该死
+                    if PersonAge>=self.DeadAge:
+                        if random.random>=0.1:
+                            GridLock.acquire()
+                            self.PersonDead(PersonSite,PersonState)
+                            GridLock.release()
+                        else:
+                            #不该死，年龄+1，信息重新写入
+                            PersonAge+=1
+                            GridLock.acquire()
+                            Grid[PersonSite[1]+1][PersonSite[0]+1]=[self.Color,PersonState,PersonAge,PersonSex,PersonChilde]
+                            GridLock.release()
+                    else:
+                        #不该死，年龄+1，信息重新写入
+                        PersonAge+=1
+                        GridLock.acquire()
+                        Grid[PersonSite[1]+1][PersonSite[0]+1]=[self.Color,PersonState,PersonAge,PersonSex,PersonChilde]
+                        GridLock.release()
+            #等待下一次循环
+            pygame.time.wait(1000/self.Speed)
+
+    #人员死亡
+    #此地清零，名单除名
+    # 如果state是0 pass，如果非1，则检查周边，如果发现颜色不一样，state减少1（最小为0)
+    def PersonDead(self,PersonSite,PersonState):
+        #此地清零，名单除名
+        Grid[PersonSite[1]+1][PersonSite[0]+1]=None
+        self.MemberList.remove(PersonSite)
+        # 如果state是0 pass，如果非1，则检查周边，如果发现颜色不一样，state减少1（最小为0)
+        if PersonState!=0:
+            for n in range(len(AddX)):
+                Other=Grid[PersonSite[1]+1+AddY[n]][PersonSite[0]+1+AddX[n]]
+                if Other=='W' or Other==None:
+                    pass
+                else:
+                    OtherColor=Other[0]
+                    if OtherColor!=self.Color:
+                        Other[1]-=1
+                        if Other[1]<0:
+                            Other[1]=0
 
     #得到位置函数
     #如果OldPosition==None，在NewPosition添加Member，并将其加入MemberList
     #如果OldPosition!=None，将OldPosition清为None，将NewPosition添加为Member，并相应改变MmberList
     def GetPosition(self,OldPosition,NewPosition,Member):
-        GridLock.acquire()
         if OldPosition==None:
             self.MemberList.append(NewPosition)
         else:
@@ -149,7 +242,24 @@ class Clan(threading.Thread):
             MemberListPosition=self.MemberList.index(OldPosition)
             self.MemberList[MemberListPosition]=NewPosition
         Grid[NewPosition[1]+1][NewPosition[0]+1]=Member
-        GridLock.release()
+
+    #检查次部落是否还有人
+    #有人 pass，没有人，在ColorExist里面删除Color，在ClanInfo里面删除信息，在WorldInfo添加信息
+    def ClanExist(self):
+        if self.MemberList==[]:
+            #在ColorExist里面删除Color
+            ColorExistLock.acquire()
+            ColorExist.remove(self.Color)
+            ColorExistLock.release()
+            #在ClanInfo里面删除信息
+            ClanInfoLock.acquire()
+            for ClanInformation in ClanInfo:
+                if ClanInformation[0].find(self.name)!=-1:
+                    break
+            ClanInfo.remove(ClanInformation)
+            ClanInfoLock.release()
+            self.AddWorldInfo("Clan "+self.name+" is over!")
+            sys.exit()
 
     #更新ClanInfo
     #如果是新部落成立，那么ClanInfo加入新信息
