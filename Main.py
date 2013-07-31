@@ -116,7 +116,9 @@ class Clan(threading.Thread):
             for n in range(20):
                 Position=[random.randint(0,NumL-1),random.randint(0,NumW-1)]
                 PositionHasExist=1
+                Turn=0
                 while PositionHasExist:
+                    Turn+=1
                     GridLock.acquire()
                     if Grid[Position[1]+1][Position[0]+1]==None:
                         PositionHasExist=0
@@ -130,6 +132,8 @@ class Clan(threading.Thread):
                         Position=[random.randint(0,NumL-1),random.randint(0,NumW-1)]
                         PositionHasExist=1
                         GridLock.release()
+                    if Turn>NumW*NumL:
+                        PositionHasExist=0
         else:
             for NewPosition in Position:
                 if random.random()<0.5:
@@ -150,6 +154,8 @@ class Clan(threading.Thread):
             if RunState==0:
                 return
             if Pause==0:
+                #成员退出
+                self.QuitMember()
                 #检查Clan是否存活
                 self.ClanExist()
                 #刷新ClanInfo
@@ -159,7 +165,12 @@ class Clan(threading.Thread):
                     GridLock.acquire()
                     Person=Grid[PersonSite[1]+1][PersonSite[0]+1]
                     GridLock.release()
-                    PersonState=Person[1]
+                    try:
+                        PersonState=Person[1]
+                    except:
+                        print PersonSite
+                        global Pause
+                        Pause=1
                     PersonAge=Person[2]
                     PersonSex=Person[3]
                     PersonChilde=Person[4]
@@ -175,17 +186,44 @@ class Clan(threading.Thread):
                         elif Other=="W":
                             pass
                         elif Other[0]==self.Color:
-                            Friend.append([PersonSite[0]+AddX[n],PersonSite[1]+AddY[n],Other])
+                            Friend.append([PersonSite[0]+AddX[n],PersonSite[1]+AddY[n]])
                         else:
-                            Foe.append([PersonSite[0]+AddX[n],PersonSite[1]+AddY[n],Other])
+                            Foe.append([PersonSite[0]+AddX[n],PersonSite[1]+AddY[n]])
                     if PersonState==0:#和平状态
-                        if Friend==[] and Foe==[]:#周围空无一人，就走动
+                        if Friend==[] and Foe==[]:#和平状态，周围空无一人，就走动
                             PersonNewSite=random.choice(NoPerson)
                             self.GetPosition(PersonSite,PersonNewSite,[self.Color,PersonState,PersonAge,PersonSex,PersonChilde])
                             PersonSite=copy.deepcopy(PersonNewSite)
-                        elif Foe!=[]:#周围有敌人
-                            pass
-                        else:#周围只有朋友
+                        elif Foe!=[]:#和平状态，周围有敌人
+                            NewFriend=[]
+                            for FoePosition in Foe:#检测有没有10%几率产生朋友
+                                if random.random()<0.9:
+                                    NewFriend.append(FoePosition)
+                            if NewFriend==[]:#没有朋友
+                                PersonState+=1
+                                self.AddWorldInfo("("+str(PersonSite[0])+","+str(PersonSite[1])+") is in the war")
+                            else:#有朋友
+                                if random.random()<0.05:#产生新部落
+                                    self.MemberList.remove(PersonSite)
+                                    NewClanMember=[]
+                                    for NewFriendPosition in NewFriend:
+                                        MemberToQuitLock.acquire()
+                                        MemberToQuit.append([Grid[NewFriendPosition[1]+1][NewFriendPosition[0]+1][0],[NewFriendPosition]])
+                                        MemberToQuitLock.release()
+                                        NewClanMember.append(NewFriendPosition)
+                                    NewClanMember.append(PersonSite)
+                                    ClanToGenerateLock.acquire()
+                                    ClanToGenerate.append(NewClanMember)
+                                    ClanToGenerateLock.release()
+                                else:#不产生新部落的话，就将朋友变到自己门下
+                                    for NewFriendPosition in NewFriend:
+                                        MemberToQuitLock.acquire()
+                                        MemberToQuit.append([Grid[NewFriendPosition[1]+1][NewFriendPosition[0]+1][0],[NewFriendPosition]])
+                                        MemberToQuitLock.release()
+                                        self.AddWorldInfo("("+str(NewFriendPosition[0])+","+str(NewFriendPosition[1])+") renegades")
+                                        self.MemberList.append(NewFriendPosition)
+                                        Grid[NewFriendPosition[1]+1][NewFriendPosition[0]+1][0]=self.Color
+                        else:#和平状态，周围只有朋友
                             pass
                     if PersonState!=0:#战争状态
                         pass
@@ -284,6 +322,19 @@ class Clan(threading.Thread):
         WorldInfoLock.acquire()
         WorldInfo.append([AddString,self.Color])
         WorldInfoLock.release()
+
+    #查看是否有Member因为新的部落成立而退出
+    def QuitMember(self):
+        MemberToQuitLock.acquire()
+        for MemberQuit in MemberToQuit:
+            if MemberQuit[0]==self.Color:
+                for MemberQuitPosition in MemberQuit[1]:
+                    try:
+                        self.MemberList.remove(MemberQuitPosition)
+                    except:
+                        pass
+                MemberToQuit.remove(MemberQuit)
+        MemberToQuitLock.release()
 ##############################################################################
 
 ##############################################################################
@@ -337,7 +388,7 @@ def DrawScreen():
 ##############################################################################
 # 主函数
 def Main():
-    global Surface, font
+    global Surface, font, ClanToGenerate
 
     #pygame的初始化
     pygame.init()
@@ -362,6 +413,13 @@ def Main():
     while True:
         #执行事件
         HandleEvents()
+        #ClanToGenerate
+        if ClanToGenerate!=[]:
+            ClanToGenerateLock.acquire()
+            for NewClanPosition in ClanToGenerate:
+                Clan(Position=NewClanPosition).start()
+            ClanToGenerate=[]
+            ClanToGenerateLock.release()
         #刷新屏幕
         DrawScreen()
         #######################################################
